@@ -1,0 +1,12 @@
+torch
+torchvision
+torchaudio
+lightning
+causal-conv1d>=1.2.0
+mamba-ssm
+numpy
+scipy
+torchmetrics
+einops
+hydra-core
+gdown
