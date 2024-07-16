@@ -1,12 +1,10 @@
 torch
 torchvision
 torchaudio
-lightning
+lightning[extra]
 causal-conv1d>=1.2.0
 mamba-ssm
 numpy
-scipy
 torchmetrics
 einops
-hydra-core
 gdown

@@ -1,5 +1,3 @@
-import hydra
-from omegaconf import DictConfig, OmegaConf
 import os
 import lightning as L
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint

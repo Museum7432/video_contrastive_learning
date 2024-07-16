@@ -74,21 +74,8 @@ def contrastive_loss(anchor, positive, negative, temperature):
     # (seq_len, seq_len2)
     AN_similarity = anchor @ negative.T
 
-    # # mask self-similarity positions in the AP matrix
-    # mask = 1 - torch.eye(seq_len, device=device)
-    # mask = (
-    #     torch.rand((seq_len, seq_len), device=device)
-    #     # + torch.eye(seq_len, device=device) / 2
-    # ) < 0.05
-    # AP_similarity *= mask
-
-    # mask2 = (
-    #     torch.rand((seq_len, seq_len2), device=device)\
-    # ) < 0.1
-    # AN_similarity *= mask2
-
     # (seq_len,)
-    numerator = torch.exp(AP_similarity / temperature).max(-1).values
+    numerator = torch.exp(AP_similarity / temperature).min(-1).values
 
     # (seq_len,)
     denominator = torch.exp(AN_similarity / temperature).sum(-1)
@@ -147,16 +134,11 @@ class VIDEO_CONTRASTIVE_LEARNING(L.LightningModule):
     def calc_loss(self, frames_rep, seq_lens, positive_queries, negative_queries):
         # frames_rep: (batch, max_number_frame, img_rep_dim)
 
-        # assume the img_query_rep_dim associated with each frame is in
-        # close proximity with the img_rep_dim
-        # TODO: improve this by adding gaussian noise to img_query_rep_dim
-
         batch_size, _, _ = frames_rep.shape
 
         # (batch, max_number_frame, video_rep_dim)
         positive_video_query_rep = self.query_proj(positive_queries)
         negative_video_query_rep = self.query_proj(negative_queries)
-
         # (batch, max_number_frame, video_rep_dim)
         video_rep = self.video_mixer(frames_rep, seq_lens)
 
