@@ -9,6 +9,60 @@ import math
 
 # convert image features into video features
 
+# copied from https://github.com/helboukkouri/character-bert/blob/main/modeling/character_cnn.py
+class Highway(torch.nn.Module):
+    """
+    A [Highway layer](https://arxiv.org/abs/1505.00387) does a gated combination of a linear
+    transformation and a non-linear transformation of its input.  :math:`y = g * x + (1 - g) *
+    f(A(x))`, where :math:`A` is a linear transformation, :math:`f` is an element-wise
+    non-linearity, and :math:`g` is an element-wise gate, computed as :math:`sigmoid(B(x))`.
+
+    This module will apply a fixed number of highway layers to its input, returning the final
+    result.
+
+    # Parameters
+
+    input_dim : `int`, required
+        The dimensionality of :math:`x`.  We assume the input has shape `(batch_size, ...,
+        input_dim)`.
+    num_layers : `int`, optional (default=`1`)
+        The number of highway layers to apply to the input.
+    activation : `Callable[[torch.Tensor], torch.Tensor]`, optional (default=`torch.nn.functional.relu`)
+        The non-linearity to use in the highway layers.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_layers: int = 1,
+        activation=torch.nn.functional.relu,
+    ):
+        super().__init__()
+        self._input_dim = input_dim
+        self._layers = torch.nn.ModuleList(
+            [torch.nn.Linear(input_dim, input_dim * 2) for _ in range(num_layers)]
+        )
+        self._activation = activation
+        for layer in self._layers:
+            # We should bias the highway layer to just carry its input forward.  We do that by
+            # setting the bias on `B(x)` to be positive, because that means `g` will be biased to
+            # be high, so we will carry the input forward.  The bias on `B(x)` is the second half
+            # of the bias vector in each Linear layer.
+            layer.bias[input_dim:].data.fill_(1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        current_input = inputs
+        for layer in self._layers:
+            projected_input = layer(current_input)
+            linear_part = current_input
+            # NOTE: if you modify this, think about whether you should modify the initialization
+            # above, too.
+            nonlinear_part, gate = projected_input.chunk(2, dim=-1)
+            nonlinear_part = self._activation(nonlinear_part)
+            gate = torch.sigmoid(gate)
+            current_input = gate * linear_part + (1 - gate) * nonlinear_part
+        return current_input
+
 
 class VIDEO_QUERY_REP_PROJECTION(nn.Module):
     def __init__(
@@ -23,10 +77,19 @@ class VIDEO_QUERY_REP_PROJECTION(nn.Module):
             hidden_size = img_query_rep_dim
 
         # TODO: add dropout
+        # self.proj = nn.Sequential(
+        #     nn.Linear(img_query_rep_dim, video_query_rep_dim),
+        #     nn.GELU(),
+        #     # nn.Linear(hidden_size, video_query_rep_dim),
+        #     # nn.ReLU(),
+        #     Highway(video_query_rep_dim, 3)
+        # )
+
         self.proj = nn.Sequential(
-            nn.Linear(img_query_rep_dim, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, video_query_rep_dim),
+            Highway(img_query_rep_dim, 4),
+            nn.GELU(),
+            nn.Linear(img_query_rep_dim, video_query_rep_dim),
+            # nn.Linear(hidden_size, video_query_rep_dim),
             # nn.ReLU(),
         )
 
@@ -64,18 +127,21 @@ def contrastive_loss(anchor, positive, negative, temperature):
     # A, anchor: (seq_len, dim)
     # P, positive: (seq_len, dim)
     # N, negative: (seq_len2, dim)
+    # 1 positive instance and seq_len2 negative instances for each anchor
+
     device = anchor.device
 
     seq_len, dim = anchor.shape
     seq_len2, _ = negative.shape
 
-    # (seq_len, seq_len)
-    AP_similarity = anchor @ positive.T
+    # (seq_len)
+    # AP_similarity = anchor @ positive.T
+    AP_similarity = torch.bmm(anchor.unsqueeze(1), positive.unsqueeze(2))
     # (seq_len, seq_len2)
     AN_similarity = anchor @ negative.T
 
     # (seq_len,)
-    numerator = torch.exp(AP_similarity / temperature).min(-1).values
+    numerator = torch.exp(AP_similarity / temperature)
 
     # (seq_len,)
     denominator = torch.exp(AN_similarity / temperature).sum(-1)
@@ -128,7 +194,7 @@ class VIDEO_CONTRASTIVE_LEARNING(L.LightningModule):
             img_rep_dim=img_rep_dim,
             video_rep_dim=video_rep_dim,
             n_layer=n_layer,
-            bidirectional=bidirectional,
+            bidirectional=False,  # a frame embedding should only remember events that happend before it to reduce redundancy
         )
 
     def calc_loss(self, frames_rep, seq_lens, positive_queries, negative_queries):
@@ -137,24 +203,20 @@ class VIDEO_CONTRASTIVE_LEARNING(L.LightningModule):
         batch_size, _, _ = frames_rep.shape
 
         # (batch, max_number_frame, video_rep_dim)
-        positive_video_query_rep = self.query_proj(positive_queries)
-        negative_video_query_rep = self.query_proj(negative_queries)
-        # (batch, max_number_frame, video_rep_dim)
         video_rep = self.video_mixer(frames_rep, seq_lens)
 
-        # normalization
-        positive_video_query_rep = F.normalize(positive_video_query_rep, dim=-1)
-        negative_video_query_rep = F.normalize(negative_video_query_rep, dim=-1)
         video_rep = F.normalize(video_rep, dim=-1)
 
         loss = []
 
         for i in range(batch_size):
+
+            # (seq_len, dim)
+            positive_query = F.normalize(self.query_proj(positive_queries[i]), dim=-1)
+            negative_query = F.normalize(self.query_proj(negative_queries[i]), dim=-1)
+
             seq_len = seq_lens[i]
             anchor_f = video_rep[i][:seq_len]
-
-            positive_query = positive_video_query_rep[i]
-            negative_query = negative_video_query_rep[i]
 
             loss.append(
                 contrastive_loss(

@@ -11,19 +11,19 @@ config = {
     "img_rep_dim": 512,
     "video_rep_dim": 768,
     "n_layer": 6,
-    "bidirectional": True,
-    "peak_lr": 5e-5,
+    "bidirectional": False,
+    "peak_lr": 1e-4,
     "last_lr": 1e-6,
     "beta_1": 0.9,
     "beta_2": 0.95,
     "weight_decay": 0.1,
     "eps": 1e-08,
     "lr_warmup_perc": 0.1,
-    "temperature": 2,
+    "temperature": 0.1,
     # "debugging": True,
-    "train_batch_size": 4,
-    "valid_batch_size": 4,
-    "num_workers": 4
+    "train_batch_size": 2,
+    "valid_batch_size": 2,
+    "num_workers": 2
 }
 
 def main():
@@ -42,8 +42,8 @@ def main():
 
     trainer = L.Trainer(
         accelerator="gpu",
-        val_check_interval=0.5,
-        max_epochs=25,
+        check_val_every_n_epoch=5,
+        max_epochs=50,
         gradient_clip_val=1.0
     )
 

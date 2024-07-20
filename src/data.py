@@ -6,9 +6,20 @@ from torch.nn.utils.rnn import pad_sequence
 import torch
 from itertools import chain
 
+
 class Vdataset(Dataset):
-    def __init__(self, data_dir, debugging=False):
+    def __init__(
+        self,
+        data_dir,
+        num_positive_ins=2,
+        num_negative_ins=8,
+        add_noises=False,
+        debugging=False,
+    ):
         self.debugging = debugging
+        self.num_positive_ins = num_positive_ins
+        self.num_negative_ins = num_negative_ins
+        self.add_noises = add_noises
 
         self.data_dir = data_dir
 
@@ -27,24 +38,40 @@ class Vdataset(Dataset):
 
         _start, _end = self.v_indices[idx]
 
+        if self.add_noises:
+            max_cut = (_end - _start) // 2
+
+            s = np.random.randint(max_cut + 1)
+            e = np.random.randint(max_cut - s + 1)
+
+            _start += s
+            _end -= e
+
         frames_rep = self.v_features[_start:_end]
+        seq_len = len(frames_rep)
 
         # craft nagetive queries
         pools = list(chain(range(0, _start), range(_end, len(self.v_features))))
-        selected_frames_ids = np.random.choice(pools, size=16, replace=False)
-        selected_frames = self.v_features[selected_frames_ids]
-        noises = np.random.normal(loc=1, scale=0.05, size=selected_frames.shape).astype("float32")
-        # negative_queries = selected_frames * noises
-        negative_queries = selected_frames
+
+        selected_frames_ids = np.random.choice(pools, size=seq_len * 2, replace=False)
+
+        negative_queries = self.v_features[selected_frames_ids]
+        if self.add_noises:
+            noises = np.random.normal(loc=1, scale=0.05, size=selected_frames.shape).astype(
+                "float32"
+            )
+            negative_queries = negative_queries * noises
 
         # craft positive queries from current video frames' representation
-        selected_frames_ids = np.random.choice(
-            range(_start, _end), size=8, replace=False
+        selected_indices = np.random.randint(seq_len, size=seq_len) % (
+            np.arange(seq_len) + 1
         )
-        selected_frames = self.v_features[selected_frames_ids]
-        # noises = np.random.normal(loc=1, scale=0.05, size=selected_frames.shape).astype("float32")
-        # positive_queries = selected_frames * noises
-        positive_queries = selected_frames
+        positive_queries = frames_rep[selected_indices]
+        if self.add_noises:
+            noises = np.random.normal(loc=1, scale=0.05, size=selected_frames.shape).astype(
+                "float32"
+            )
+            positive_queries = positive_queries * noises
 
         # tensorized input
         frames_rep = torch.tensor(frames_rep)
@@ -65,20 +92,18 @@ def collate_fn(items):
 
     seq_lens = torch.tensor([i["seq_lens"] for i in items])
 
-    # positive_queries and positive_queries both have constant size
-
-    positive_queries = pad_sequence(
-        [i["positive_queries"] for i in items], batch_first=True
-    )
-    negative_queries = pad_sequence(
-        [i["negative_queries"] for i in items], batch_first=True
-    )
+    # positive_queries = pad_sequence(
+    #     [i["positive_queries"] for i in items], batch_first=True
+    # )
+    # negative_queries = pad_sequence(
+    #     [i["negative_queries"] for i in items], batch_first=True
+    # )
 
     return {
         "frames_rep": frames_rep,
         "seq_lens": seq_lens,
-        "positive_queries": positive_queries,
-        "negative_queries": negative_queries,
+        "positive_queries": [i["positive_queries"] for i in items],
+        "negative_queries": [i["negative_queries"] for i in items],
     }
 
 
